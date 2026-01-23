@@ -1,87 +1,82 @@
-// netlify/functions/contact-us.js
-import mongoose from "mongoose";
 import nodemailer from "nodemailer";
+import mongoose from "mongoose";
+import dotenv from "dotenv";
 
-let isConnected = false;
+dotenv.config();
 
+// MongoDB connection (cached)
+let conn = null;
 const connectDB = async () => {
-  if (isConnected) return;
-  await mongoose.connect(process.env.MONGO_URL);
-  isConnected = true;
+  if (conn) return conn;
+  conn = await mongoose.connect(process.env.MONGO_URL);
+  return conn;
 };
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type'
-};
+// Contact schema
+const contactSchema = new mongoose.Schema(
+  { name: String, company: String, email: String, source: String, message: String },
+  { timestamps: true }
+);
+const Contact = mongoose.models.Contact || mongoose.model("Contact", contactSchema);
 
-exports.handler = async (event, context) => {
-  if (event.httpMethod === 'OPTIONS') {
-    return { statusCode: 204, headers: corsHeaders };
-  }
+// Nodemailer transporter
+const transporter = nodemailer.createTransport({
+  host: process.env.EMAIL_HOST,
+  port: Number(process.env.EMAIL_PORT),
+  secure: true,
+  auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
+});
 
-  if (event.httpMethod !== 'POST') {
-    return {
-      statusCode: 405,
-      body: JSON.stringify({ message: "Method not allowed" })
-    };
-  }
+// Netlify function
+export async function handler(event, context) {
+  if (event.httpMethod !== "POST") return { statusCode: 405, body: "Method Not Allowed" };
+
+  await connectDB();
+
+  const { name, company, email, source, message } = JSON.parse(event.body);
 
   try {
-    const body = JSON.parse(event.body);
-    const { name, company, email, source, message } = body;
-
-    await connectDB();
-
-    const contactSchema = new mongoose.Schema({
-      name: String,
-      company: String,
-      email: String,
-      source: String,
-      message: String
-    }, { timestamps: true });
-
-    const Contact = mongoose.model("Contact", contactSchema, "contacts");
     await Contact.create({ name, company, email, source, message });
 
-    const transporter = nodemailer.createTransport({
-      host: process.env.EMAIL_HOST,
-      port: Number(process.env.EMAIL_PORT),
-      secure: true,
-      auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS
-      }
+    // Email to Admin
+    await transporter.sendMail({
+      from: `"CloudMaSa Contact" <${process.env.EMAIL_USER}>`,
+      to: process.env.EMAIL_USER,
+      subject: " New Contact Request",
+      html: `
+      <div style="font-family: Arial, sans-serif; color: #333;">
+        <h2 style="color: #0a1a44;">New Contact Request</h2>
+        <table style="width: 100%; border-collapse: collapse;">
+          <tr><td style="padding: 8px; font-weight: bold;">Name:</td><td>${name}</td></tr>
+          <tr><td style="padding: 8px; font-weight: bold;">Company:</td><td>${company}</td></tr>
+          <tr><td style="padding: 8px; font-weight: bold;">Email:</td><td>${email}</td></tr>
+          <tr><td style="padding: 8px; font-weight: bold;">Source:</td><td>${source}</td></tr>
+          <tr><td style="padding: 8px; font-weight: bold;">Message:</td><td>${message}</td></tr>
+        </table>
+        <p style="margin-top: 20px;">— CloudMaSa Team</p>
+      </div>
+      `,
     });
 
-    await Promise.all([
-      transporter.sendMail({
-        from: `"CloudMaSa Contact" <${process.env.EMAIL_USER}>`,
-        to: process.env.EMAIL_USER,
-        subject: "📩 New Contact Request",
-        html: `<h2>New Contact</h2><p><b>Name:</b> ${name}</p><p><b>Company:</b> ${company}</p><p><b>Email:</b> ${email}</p><p><b>Source:</b> ${source}</p><p><b>Message:</b> ${message}</p>`
-      }),
-      transporter.sendMail({
-        from: `"CloudMaSa Team" <${process.env.EMAIL_USER}>`,
-        to: email,
-        subject: "✅ We received your message",
-        html: `<p>Thank you ${name}, we will contact you shortly.</p>`
-      })
-    ]);
+    // Email to User
+    await transporter.sendMail({
+      from: `"CloudMaSa Team" <${process.env.EMAIL_USER}>`,
+      to: email,
+      subject: " We Received Your Message",
+      html: `
+      <div style="font-family: Arial, sans-serif; color: #333;">
+        <h2 style="color: #0a1a44;">Hello ${name},</h2>
+        <p>Thank you for contacting <strong>CloudMaSa</strong>. We have received your message and will get back to you shortly.</p>
+        <p><strong>Your Message:</strong></p>
+        <p>${message}</p>
+        <p style="margin-top: 20px;">Best regards,<br>CloudMaSa Team</p>
+      </div>
+      `,
+    });
 
-    return {
-      statusCode: 200,
-      headers: corsHeaders,
-      body: JSON.stringify({ message: "Message sent successfully" })
-    };
-
+    return { statusCode: 200, body: JSON.stringify({ message: "Message sent successfully" }) };
   } catch (err) {
-    console.error("Contact Error:", err);
-    return {
-      statusCode: 500,
-      headers: corsHeaders,
-      body: JSON.stringify({ message: "Server error" })
-    };
+    console.error(err);
+    return { statusCode: 500, body: JSON.stringify({ message: "Server error" }) };
   }
-};
+}
